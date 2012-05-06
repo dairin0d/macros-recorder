@@ -95,6 +95,10 @@ class SceneMacros(bpy.types.PropertyGroup):
         op_storage.value = self.make_entry(op)
     
     def write_macro_text(self, textblock):
+        # NOTE: we can't do a 'live update', because if the user
+        # undoes past the point of textblock creation, any access
+        # to texts might crash Blender (at least this happens when
+        # you try to change operator's arguments after its execution)
         textblock.clear()
         code_template = \
 """
@@ -239,17 +243,6 @@ class SceneDiff:
         if orientation != self.orientation:
             self.orientation = orientation
 
-is_macro_recording = False
-macro_window = None
-macro_recorder = None
-
-def process_diff(scene):
-    if not is_macro_recording:
-        return
-    if bpy.context.window != macro_window:
-        return
-    macro_recorder.process(bpy.context)
-
 class MacroRecorder(bpy.types.Operator):
     """Record operators to a text block"""
     bl_idname = "wm.record_macro"
@@ -281,9 +274,6 @@ class MacroRecorder(bpy.types.Operator):
                 MacroRecorder.v3d = context.space_data
             else:
                 MacroRecorder.v3d = None
-            
-            #for scene in bpy.data.scenes:
-            #    scene.macros.clear()
         else:
             text_block = bpy.data.texts.new("macro")
             context.scene.macros.write_macro_text(text_block)
@@ -304,10 +294,16 @@ class MacroRecorder(bpy.types.Operator):
         
         return {'FINISHED'}
 
-def menu_func_draw(self, context):
-    text = ("Recording... (Stop)" if is_macro_recording else "Record Macro")
-    icon = ('CANCEL' if is_macro_recording else 'REC')
-    self.layout.operator("wm.record_macro", text=text, icon=icon)
+is_macro_recording = False
+macro_window = None
+macro_recorder = None
+
+def process_diff(scene):
+    if not is_macro_recording:
+        return
+    if bpy.context.window != macro_window:
+        return
+    macro_recorder.process(bpy.context)
 
 class VIEW3D_PT_macro(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
@@ -320,6 +316,11 @@ class VIEW3D_PT_macro(bpy.types.Panel):
     def draw_header(self, context):
         icon = ('CANCEL' if is_macro_recording else 'REC')
         self.layout.operator("wm.record_macro", text="", icon=icon)
+
+def menu_func_draw(self, context):
+    text = ("Recording... (Stop)" if is_macro_recording else "Record Macro")
+    icon = ('CANCEL' if is_macro_recording else 'REC')
+    self.layout.operator("wm.record_macro", text=text, icon=icon)
 
 #============================================================================#
 def register():
