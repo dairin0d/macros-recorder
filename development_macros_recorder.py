@@ -59,7 +59,14 @@ class SceneMacros(bpy.types.PropertyGroup):
                     # Somebody forgot to declare items for this enum.
                     # We can only ignore this property.
                     continue
-                v = repr(rna_prop.enum_items[v].identifier)
+                if rna_prop.is_enum_flag:
+                    v_ = set()
+                    for i in range(len(rna_prop.enum_items)):
+                        if v & (1 << i):
+                            v_.add(rna_prop.enum_items[i].identifier)
+                    v = repr(v_)
+                else:
+                    v = repr(rna_prop.enum_items[v].identifier)
             else:
                 is_array = (type(v).__name__ == "IDPropertyArray")
                 if is_array:
@@ -142,9 +149,13 @@ class SceneDiff:
         self.pivot = None
         self.pivot_align = None
         self.orientation = None
+        self.proportional = None
+        self.proportional_edit = None
+        self.proportional_falloff = None
     
     def process(self, context):
         scene = context.scene
+        active_obj = context.object
         
         undo_redo = False
         scene_hash = hash(scene)
@@ -152,9 +163,20 @@ class SceneDiff:
             self.scene_hash = scene_hash
             undo_redo = True
         
-        active_obj = context.object
+        is_updated = False
+        if active_obj:
+            if 'EDIT' in active_obj.mode:
+                if active_obj.is_updated or active_obj.is_updated_data:
+                    is_updated = True
+                data = active_obj.data
+                if data.is_updated or data.is_updated_data:
+                    is_updated = True
+        
         selected = set(obj.name for obj in context.selected_objects)
         active = (active_obj.name if active_obj else None)
+        proportional = scene.tool_settings.use_proportional_edit_objects
+        proportional_edit = scene.tool_settings.proportional_edit
+        proportional_falloff = scene.tool_settings.proportional_edit_falloff
         cursor = Vector(scene.cursor_location)
         
         v3d = MacroRecorder.v3d
@@ -172,6 +194,12 @@ class SceneDiff:
             self.selected = selected
         if self.active is None:
             self.active = active
+        if self.proportional is None:
+            self.proportional = proportional
+        if self.proportional_edit is None:
+            self.proportional_edit = proportional_edit
+        if self.proportional_falloff is None:
+            self.proportional_falloff = proportional_falloff
         if self.cursor is None:
             self.cursor = cursor
         if self.pivot is None:
@@ -180,15 +208,6 @@ class SceneDiff:
             self.pivot_align = pivot_align
         if self.orientation is None:
             self.orientation = orientation
-        
-        is_updated = False
-        if active_obj:
-            if 'EDIT' in active_obj.mode:
-                if active_obj.is_updated or active_obj.is_updated_data:
-                    is_updated = True
-                data = active_obj.data
-                if data.is_updated or data.is_updated_data:
-                    is_updated = True
         
         wm = context.window_manager
         operators_count = len(wm.operators)
@@ -218,6 +237,18 @@ class SceneDiff:
                 cursor_context = ("space_data" if v3d else "scene")
                 scene.macros.add("context.%s.cursor_location = %s" %
                                  (cursor_context, repr(cursor)))
+            if proportional != self.proportional:
+                scene.macros.add("context.scene.tool_settings."\
+                                 "use_proportional_edit_objects = %s" %
+                                 repr(proportional))
+            if proportional_edit != self.proportional_edit:
+                scene.macros.add("context.scene.tool_settings."\
+                                 "proportional_edit = %s" %
+                                 repr(proportional_edit))
+            if proportional_falloff != self.proportional_falloff:
+                scene.macros.add("context.scene.tool_settings."\
+                                 "proportional_edit_falloff = %s" %
+                                 repr(proportional_falloff))
             if (pivot is not None) and (pivot != self.pivot):
                 scene.macros.add("context.space_data.pivot_point = %s" %
                                  repr(pivot))
@@ -234,6 +265,12 @@ class SceneDiff:
             self.selected = selected
         if active != self.active:
             self.active = active
+        if proportional != self.proportional:
+            self.proportional = proportional
+        if proportional_edit != self.proportional_edit:
+            self.proportional_edit = proportional_edit
+        if proportional_falloff != self.proportional_falloff:
+            self.proportional_falloff = proportional_falloff
         if cursor != self.cursor:
             self.cursor = cursor
         if pivot != self.pivot:
