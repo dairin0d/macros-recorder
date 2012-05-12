@@ -93,7 +93,6 @@ def types2props(tp, empty_enum_to_string=True):
         items = [(item.identifier, item.name, item.description)
                  for item in tp.enum_items]
         ids = set(item.identifier for item in tp.enum_items)
-        print(defaults, ids)
         if tp.is_enum_flag:
             for id in tuple(defaults):
                 if id not in ids:
