@@ -16,7 +16,7 @@ The addon also allows you to save parameters of procedurally generated objects a
 afterwards. To save procedural parameters, invoke "Regenerate procedural object" operator just after you
 have created the object. Invoke it again anytime afterwards to change the parameters.
 
-*Important!*
+`Important!`
 Procedural parameters are saved in the active object, so make sure the right one is selected.
 Also, regeneration would replace the whole object's data, so any changes you did to mesh/curve/etc.
 would be erased.
