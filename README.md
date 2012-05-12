@@ -12,6 +12,15 @@ the recording. For example, in Edit Mode, if you undo an operation, it won't get
 Also, the results may be not reproducible because of the wrong context, or due to the differences between
 operators' behavior in modal and non-modal regimes.
 
+The addon also allows you to save parameters of procedurally generated objects and regenerate them
+afterwards. To save procedural parameters, invoke "Regenerate procedural object" operator just after you
+have created the object. Invoke it again anytime afterwards to change the parameters.
+
+*Important!*
+Procedural parameters are saved in the active object, so make sure the right one is selected.
+Also, regeneration would replace the whole object's data, so any changes you did to mesh/curve/etc.
+would be erased.
+
 Installing
 ----------
 
