@@ -20,7 +20,7 @@
 bl_info = {
     "name": "Macros Recorder",
     "author": "dairin0d",
-    "version": (1, 2),
+    "version": (1, 3),
     "blender": (2, 6, 0),
     "location": "Text Editor -> Text -> Record Macro",
     "description": "Record macros to text blocks",
@@ -67,6 +67,87 @@ def iter_public_bpy_props(cls, exclude_hidden=False):
                     continue
             yield (key, value)
 
+def types2props(tp, empty_enum_to_string=True):
+    options = set()
+    if tp.is_hidden:
+        options.add('HIDDEN')
+    if tp.is_skip_save:
+        options.add('SKIP_SAVE')
+    if tp.is_animatable:
+        options.add('ANIMATABLE')
+    if tp.is_enum_flag:
+        options.add('ENUM_FLAG')
+    kwargs = dict(name=tp.name, description=tp.description,
+                  options=options)
+    
+    if tp.type in ('POINTER', 'COLLECTION'):
+        kwargs["type"] = tp.fixed_type
+        pp = bpy.props.CollectionProperty(**kwargs)
+    elif tp.type == 'STRING':
+        kwargs["default"] = tp.default
+        kwargs["maxlen"] = tp.length_max
+        pp = bpy.props.StringProperty(**kwargs)
+    elif tp.type == 'ENUM':
+        defaults = (set(tp.default_flag) if tp.is_enum_flag
+                             else tp.default)
+        items = [(item.identifier, item.name, item.description)
+                 for item in tp.enum_items]
+        ids = set(item.identifier for item in tp.enum_items)
+        print(defaults, ids)
+        if tp.is_enum_flag:
+            for id in tuple(defaults):
+                if id not in ids:
+                    defaults.discard(id)
+        else:
+            if defaults not in ids:
+                defaults = (ids[0] if ids else '')
+        if (not ids) and empty_enum_to_string:
+            pp = bpy.props.StringProperty(**kwargs)
+        else:
+            if ids:
+                kwargs["default"] = defaults
+            kwargs["items"] = items
+            pp = bpy.props.EnumProperty(**kwargs)
+    else:
+        is_not_array = (tp.array_length == 0)
+        
+        subtype_map = {'COORDINATES':'XYZ', 'LAYER_MEMBERSHIP':'LAYER'}
+        kwargs["subtype"] = subtype_map.get(tp.subtype, tp.subtype)
+        
+        if is_not_array:
+            kwargs["default"] = tp.default
+        else:
+            kwargs["default"] = tuple(tp.default_array)
+            kwargs["size"] = tp.array_length
+        
+        if tp.type != 'BOOLEAN':
+            kwargs["min"] = tp.hard_min
+            kwargs["max"] = tp.hard_max
+            kwargs["soft_min"] = tp.soft_min
+            kwargs["soft_max"] = tp.soft_max
+            kwargs["step"] = tp.step
+            if tp.type == 'FLOAT':
+                kwargs["precision"] = tp.precision
+                kwargs["unit"] = tp.unit
+        
+        if tp.type == 'BOOLEAN':
+            if is_not_array:
+                pp = bpy.props.BoolProperty(**kwargs)
+            else:
+                pp = bpy.props.BoolVectorProperty(**kwargs)
+        elif tp.type == 'INT':
+            if is_not_array:
+                pp = bpy.props.IntProperty(**kwargs)
+            else:
+                pp = bpy.props.IntVectorProperty(**kwargs)
+        elif tp.type == 'FLOAT':
+            if is_not_array:
+                pp = bpy.props.FloatProperty(**kwargs)
+            else:
+                pp = bpy.props.FloatVectorProperty(**kwargs)
+    
+    return pp
+
 def get_op(idname):
     category_name, op_name = idname.split(".")
     category = getattr(bpy.ops, category_name)
@@ -75,7 +156,7 @@ def get_op(idname):
 class CurrentGeneratorProperties(bpy.types.PropertyGroup):
     pass
 
-def repr_props(obj, limit_to=()):
+def repr_props(obj, limit_to=None):
     rna_props = obj.rna_type.properties
     
     args = {}
@@ -83,7 +164,7 @@ def repr_props(obj, limit_to=()):
     for k, rna in rna_props.items():
         if k == "rna_type":
             continue
-        elif limit_to and (k not in limit_to):
+        elif (limit_to is not None) and (k not in limit_to):
             continue
         
         v = getattr(obj, k)
@@ -433,7 +514,7 @@ class RegenerateProceduralObject(bpy.types.Operator):
         return datablocks
     
     def invoke(self, context, event):
-        forbidden = {"bl_rna", "rna_type"}
+        forbidden = {"bl_rna", "rna_type", "name"}
         cls = CurrentGeneratorProperties
         
         for k in list(cls.__dict__.keys()):
@@ -444,10 +525,21 @@ class RegenerateProceduralObject(bpy.types.Operator):
         
         op = get_op(".".join(op_idname))
         op_class = type(op.get_instance())
+        rna = op.get_rna()
+        rna_props = rna.rna_type.properties
         
         for k in dir(op_class):
             if not (k.startswith("__") or (k in forbidden)):
                 setattr(cls, k, getattr(op_class, k))
+        
+        # Not all operators have their properties declared using bpy.props
+        # (e.g. most of built-in AddMesh operators)
+        for k, v in rna_props.items():
+            if hasattr(cls, k):
+                continue
+            if not (k.startswith("__") or (k in forbidden)):
+                v = types2props(v)
+                setattr(cls, k, v)
         
         def set_params(**kwargs):
             sub_op = getattr(context.window_manager, procgen_attrname)
@@ -486,17 +578,15 @@ class RegenerateProceduralObject(bpy.types.Operator):
         
         sub_op = getattr(context.window_manager, procgen_attrname)
         
-        op = get_op(".".join(op_idname))
-        op_class = type(op.get_instance())
+        args = {}
+        def set_params(**kwargs):
+            for k, v, in kwargs.items():
+                v = getattr(sub_op, k)
+                if type(v).__name__ == "bpy_prop_array":
+                    v = tuple(v)
+                args[k] = v
+        eval("set_params(%s)" % op_params)
         
-        # PropertyGroup may contain some bpy props which
-        # are not present in the operator
-        op_props = set()
-        for k, v in iter_public_bpy_props(op_class):
-            if hasattr(sub_op, k):
-                op_props.add(k)
-        
-        args = repr_props(sub_op, op_props)
         args = [("%s=%s" % (k, repr(v))) for k, v in args.items()]
         procgen = ("bpy.ops.%s(%s)" % (".".join(op_idname), ", ".join(args)))
         obj.procedural_generator = procgen
