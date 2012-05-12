@@ -20,7 +20,7 @@
 bl_info = {
     "name": "Macros Recorder",
     "author": "dairin0d",
-    "version": (1, 3),
+    "version": (1, 4),
     "blender": (2, 6, 0),
     "location": "Text Editor -> Text -> Record Macro",
     "description": "Record macros to text blocks",
@@ -459,26 +459,6 @@ def process_diff(scene):
         return
     macro_recorder.process(bpy.context)
 
-class StoreProceduralGenerator(bpy.types.Operator):
-    """Store procedural object parameters"""
-    bl_idname = "object.store_procedural_generator"
-    bl_label = "Store procedural parameters"
-    
-    @classmethod
-    def poll(cls, context):
-        #if is_macro_recording:
-        #    return False
-        wm = context.window_manager
-        return (context.object and wm.operators and
-                ('REGISTER' in wm.operators[-1].bl_options))
-    
-    def execute(self, context):
-        wm = context.window_manager
-        obj = context.object
-        op = wm.operators[-1]
-        obj.procedural_generator = repr_op_call(op)
-        return {'FINISHED'}
-
 procgen_attrname = "~current_procedural_generator_properties~"
 
 class RegenerateProceduralObject(bpy.types.Operator):
@@ -489,9 +469,18 @@ class RegenerateProceduralObject(bpy.types.Operator):
     
     @classmethod
     def poll(cls, context):
+        wm = context.window_manager
         obj = context.object
-        return ((context.mode == 'OBJECT') and
-                obj and obj.procedural_generator)
+        
+        if not ((context.mode == 'OBJECT') and obj):
+            return False
+        
+        if obj.procedural_generator:
+            return True
+        elif wm.operators and ('REGISTER' in wm.operators[-1].bl_options):
+            return True
+        
+        return False
     
     def idname_params(self, obj):
         i = obj.procedural_generator.index("(")
@@ -520,7 +509,17 @@ class RegenerateProceduralObject(bpy.types.Operator):
             if not (k.startswith("__") or (k in forbidden)):
                 delattr(cls, k)
         
-        op_idname, op_params = self.idname_params(context.object)
+        obj = context.object
+        if not obj.procedural_generator:
+            wm = context.window_manager
+            op = wm.operators[-1]
+            obj.procedural_generator = repr_op_call(op)
+            # If we don't push an undo level, the next time
+            # execute() will be called, obj.procedural_generator
+            # would revert to empty string
+            bpy.ops.ed.undo_push(message="Store procedural parameters")
+        
+        op_idname, op_params = self.idname_params(obj)
         
         op = get_op(".".join(op_idname))
         op_class = type(op.get_instance())
@@ -641,11 +640,14 @@ class VIEW3D_PT_macro(bpy.types.Panel):
         icon = ('CANCEL' if is_macro_recording else 'REC')
         layout.operator("wm.record_macro", text="", icon=icon)
         
-        sublayout = layout.row(True)
-        sublayout.operator("object.store_procedural_generator",
-                             text="", icon='FILE_TICK')
-        sublayout.operator("object.regenerate_procedural_object",
-                             text="", icon='FILE_REFRESH')
+        if context.mode == 'OBJECT':
+            obj = context.object
+            if obj and obj.procedural_generator:
+                icon = 'FILE_REFRESH'
+            else:
+                icon = 'FILE_TICK'
+            layout.operator("object.regenerate_procedural_object",
+                            text="", icon=icon)
 
 def menu_func_draw(self, context):
     text = ("Recording... (Stop)" if is_macro_recording else "Record Macro")
@@ -657,7 +659,6 @@ def register():
     bpy.utils.register_class(StringItem)
     bpy.utils.register_class(SceneMacros)
     bpy.utils.register_class(MacroRecorder)
-    bpy.utils.register_class(StoreProceduralGenerator)
     bpy.utils.register_class(CurrentGeneratorProperties)
     bpy.utils.register_class(RegenerateProceduralObject)
     bpy.utils.register_class(VIEW3D_PT_macro)
@@ -683,7 +684,6 @@ def unregister():
     bpy.utils.unregister_class(VIEW3D_PT_macro)
     bpy.utils.unregister_class(RegenerateProceduralObject)
     bpy.utils.unregister_class(CurrentGeneratorProperties)
-    bpy.utils.unregister_class(StoreProceduralGenerator)
     bpy.utils.unregister_class(MacroRecorder)
     bpy.utils.unregister_class(SceneMacros)
     bpy.utils.unregister_class(StringItem)
