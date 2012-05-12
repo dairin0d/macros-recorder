@@ -469,7 +469,13 @@ class RegenerateProceduralObject(bpy.types.Operator):
             def draw(self, context):
                 sub_op = getattr(context.window_manager, procgen_attrname)
                 sub_op.layout = self.layout
-                sub_op.draw(context)
+                try:
+                    sub_op.draw(context)
+                except Exception:
+                    # E.g. Sapling addon gives this error:
+                    # AttributeError: 'CurrentGeneratorProperties'
+                    # object has no attribute 'properties'
+                    pass
             setattr(type(self), "draw", draw)
         
         return self.execute(context)
@@ -493,7 +499,6 @@ class RegenerateProceduralObject(bpy.types.Operator):
         args = repr_props(sub_op, op_props)
         args = [("%s=%s" % (k, repr(v))) for k, v in args.items()]
         procgen = ("bpy.ops.%s(%s)" % (".".join(op_idname), ", ".join(args)))
-        print(procgen)
         obj.procedural_generator = procgen
         
         scene_objects = context.scene.objects
