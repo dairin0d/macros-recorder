@@ -20,7 +20,7 @@
 bl_info = {
     "name": "Macros Recorder",
     "author": "dairin0d",
-    "version": (1, 0),
+    "version": (1, 2),
     "blender": (2, 6, 0),
     "location": "Text Editor -> Text -> Record Macro",
     "description": "Record macros to text blocks",
@@ -34,7 +34,77 @@ bl_info = {
 
 import bpy
 
-from mathutils import Vector
+from mathutils import Vector, Matrix, Quaternion, Euler, Color
+
+bpy_props = {
+    bpy.props.BoolProperty,
+    bpy.props.BoolVectorProperty,
+    bpy.props.IntProperty,
+    bpy.props.IntVectorProperty,
+    bpy.props.FloatProperty,
+    bpy.props.FloatVectorProperty,
+    bpy.props.StringProperty,
+    bpy.props.EnumProperty,
+    bpy.props.PointerProperty,
+    bpy.props.CollectionProperty,
+}
+
+def is_bpy_prop(value):
+    if isinstance(value, tuple) and (len(value) == 2):
+        if (value[0] in bpy_props) and isinstance(value[1], dict):
+            return True
+    return False
+
+def iter_public_bpy_props(cls, exclude_hidden=False):
+    for key in dir(cls):
+        if key.startswith("_"):
+            continue
+        value = getattr(cls, key)
+        if is_bpy_prop(value):
+            if exclude_hidden:
+                options = value[1].get("options", "")
+                if 'HIDDEN' in options:
+                    continue
+            yield (key, value)
+
+def get_op(idname):
+    category_name, op_name = idname.split(".")
+    category = getattr(bpy.ops, category_name)
+    return getattr(category, op_name)
+
+class CurrentGeneratorProperties(bpy.types.PropertyGroup):
+    pass
+
+def repr_props(obj, limit_to=()):
+    rna_props = obj.rna_type.properties
+    
+    args = {}
+    
+    for k, rna in rna_props.items():
+        if k == "rna_type":
+            continue
+        elif limit_to and (k not in limit_to):
+            continue
+        
+        v = getattr(obj, k)
+        
+        if rna.type == 'POINTER':
+            v = repr_props(v)
+        elif rna.type == 'COLLECTION':
+            v = [repr_props(item) for item in v]
+        else:
+            if type(v).__name__ == "bpy_prop_array":
+                v = tuple(v)
+        
+        args[k] = v
+    
+    return args
+
+def repr_op_call(op):
+    idname = op.bl_idname.replace("_OT_", ".").lower()
+    args = repr_props(op)
+    args = [("%s=%s" % (k, repr(v))) for k, v in args.items()]
+    return ("bpy.ops.%s(%s)" % (idname, ", ".join(args)))
 
 class StringItem(bpy.types.PropertyGroup):
     value = bpy.props.StringProperty()
@@ -46,44 +116,11 @@ class SceneMacros(bpy.types.PropertyGroup):
         while self.ops:
             self.ops.remove(0)
     
-    def make_entry(self, op):
-        idname = op.bl_idname.replace("_OT_", ".").lower()
-        props = op.properties
-        rna_props = op.rna_type.properties
-        args = []
-        for k, v in props.items():
-            rna_prop = rna_props[k]
-            prop_type = rna_prop.type
-            if prop_type == 'ENUM':
-                if not rna_prop.enum_items:
-                    # Somebody forgot to declare items for this enum.
-                    # We can only ignore this property.
-                    continue
-                if rna_prop.is_enum_flag:
-                    v_ = set()
-                    for i in range(len(rna_prop.enum_items)):
-                        if v & (1 << i):
-                            v_.add(rna_prop.enum_items[i].identifier)
-                    v = repr(v_)
-                else:
-                    v = repr(rna_prop.enum_items[v].identifier)
-            else:
-                is_array = (type(v).__name__ == "IDPropertyArray")
-                if is_array:
-                    if prop_type == 'BOOLEAN':
-                        v = tuple(bool(item) for item in v)
-                    else:
-                        v = tuple(v)
-                elif prop_type == 'BOOLEAN':
-                    v = bool(v)
-            args.append("%s=%s" % (k, v))
-        return ("bpy.ops.%s(%s)" % (idname, ", ".join(args)))
-    
     def _add(self, op):
         if isinstance(op, str):
             entry = op
         else:
-            entry = self.make_entry(op)
+            entry = repr_op_call(op)
         op_storage = self.ops.add()
         op_storage.value = entry
     
@@ -99,7 +136,7 @@ class SceneMacros(bpy.types.PropertyGroup):
             op_storage = self.ops.add()
         else:
             op_storage = self.ops[len(self.ops) - 1]
-        op_storage.value = self.make_entry(op)
+        op_storage.value = repr_op_call(op)
     
     def write_macro_text(self, textblock):
         # NOTE: we can't do a 'live update', because if the user
@@ -110,7 +147,7 @@ class SceneMacros(bpy.types.PropertyGroup):
         code_template = \
 """
 import bpy
-from mathutils import Vector
+from mathutils import Vector, Matrix, Quaternion, Euler, Color
 
 class MacroOperator(bpy.types.Operator):
     bl_idname = "macro.{0}"
@@ -342,6 +379,160 @@ def process_diff(scene):
         return
     macro_recorder.process(bpy.context)
 
+class StoreProceduralGenerator(bpy.types.Operator):
+    """Store procedural object parameters"""
+    bl_idname = "object.store_procedural_generator"
+    bl_label = "Store procedural parameters"
+    
+    @classmethod
+    def poll(cls, context):
+        #if is_macro_recording:
+        #    return False
+        wm = context.window_manager
+        return (context.object and wm.operators and
+                ('REGISTER' in wm.operators[-1].bl_options))
+    
+    def execute(self, context):
+        wm = context.window_manager
+        obj = context.object
+        op = wm.operators[-1]
+        obj.procedural_generator = repr_op_call(op)
+        return {'FINISHED'}
+
+procgen_attrname = "~current_procedural_generator_properties~"
+
+class RegenerateProceduralObject(bpy.types.Operator):
+    """Regenerate procedural object"""
+    bl_idname = "object.regenerate_procedural_object"
+    bl_label = "Regenerate procedural object"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    @classmethod
+    def poll(cls, context):
+        obj = context.object
+        return ((context.mode == 'OBJECT') and
+                obj and obj.procedural_generator)
+    
+    def idname_params(self, obj):
+        i = obj.procedural_generator.index("(")
+        op_idname = obj.procedural_generator[:i].split(".")[-2:]
+        op_params = obj.procedural_generator[(i + 1):-1]
+        return op_idname, op_params
+    
+    def get_datablocks(self, obj_type):
+        datablocks = {
+            'MESH':'meshes', 'CURVE':'curves','SURFACE':'curves',
+            'META':'metaballs', 'FONT':'fonts', 'ARMATURE':'armatures',
+            'LATTICE':'lattices', 'EMPTY':None, 'CAMERA':'cameras', 
+            'LAMP':'lamps', 'SPEAKER':'speakers',
+        }[obj_type]
+        
+        if datablocks:
+            datablocks = getattr(bpy.data, datablocks)
+        
+        return datablocks
+    
+    def invoke(self, context, event):
+        forbidden = {"bl_rna", "rna_type"}
+        cls = CurrentGeneratorProperties
+        
+        for k in list(cls.__dict__.keys()):
+            if not (k.startswith("__") or (k in forbidden)):
+                delattr(cls, k)
+        
+        op_idname, op_params = self.idname_params(context.object)
+        
+        op = get_op(".".join(op_idname))
+        op_class = type(op.get_instance())
+        
+        for k in dir(op_class):
+            if not (k.startswith("__") or (k in forbidden)):
+                setattr(cls, k, getattr(op_class, k))
+        
+        def set_params(**kwargs):
+            sub_op = getattr(context.window_manager, procgen_attrname)
+            for k, v, in kwargs.items():
+                setattr(sub_op, k, v)
+        eval("set_params(%s)" % op_params)
+        
+        if not hasattr(cls, "draw"):
+            def draw(self, context):
+                sub_op = getattr(context.window_manager, procgen_attrname)
+                layout = self.layout
+                cls = type(sub_op)
+                bpy_props = [kv[0] for kv in iter_public_bpy_props(cls, True)]
+                for kv in iter_public_bpy_props(cls, True):
+                    sublayout = layout.column()
+                    sublayout.prop(sub_op, kv[0])
+            setattr(type(self), "draw", draw)
+        else:
+            def draw(self, context):
+                sub_op = getattr(context.window_manager, procgen_attrname)
+                sub_op.layout = self.layout
+                sub_op.draw(context)
+            setattr(type(self), "draw", draw)
+        
+        return self.execute(context)
+    
+    def execute(self, context):
+        obj = context.object
+        op_idname, op_params = self.idname_params(obj)
+        
+        sub_op = getattr(context.window_manager, procgen_attrname)
+        
+        op = get_op(".".join(op_idname))
+        op_class = type(op.get_instance())
+        
+        # PropertyGroup may contain some bpy props which
+        # are not present in the operator
+        op_props = set()
+        for k, v in iter_public_bpy_props(op_class):
+            if hasattr(sub_op, k):
+                op_props.add(k)
+        
+        args = repr_props(sub_op, op_props)
+        args = [("%s=%s" % (k, repr(v))) for k, v in args.items()]
+        procgen = ("bpy.ops.%s(%s)" % (".".join(op_idname), ", ".join(args)))
+        print(procgen)
+        obj.procedural_generator = procgen
+        
+        scene_objects = context.scene.objects
+        
+        n_objs = len(scene_objects)
+        selected = list(context.selected_objects)
+        
+        eval(procgen)
+        
+        old_data = obj.data
+        old_data_name = obj.data.name
+        datablocks = self.get_datablocks(obj.type)
+        
+        # Most recently added objects have lowest indices
+        obj.data = scene_objects[0].data
+        
+        for i in range(len(scene_objects) - n_objs):
+            tmp_obj = scene_objects[0]
+            scene_objects.unlink(tmp_obj)
+            bpy.data.objects.remove(tmp_obj)
+        
+        if old_data and (old_data.users == 0):
+            if datablocks:
+                datablocks.remove(old_data)
+            
+            if obj.data:
+                obj.data.name = old_data_name
+        
+        scene_objects.active = obj
+        for sel_obj in selected:
+            sel_obj.select = True
+        
+        return {'FINISHED'}
+    
+    # This is necessary to make Blender register the operator
+    # as an operator that draws something
+    def draw(self, context):
+        pass
+
 class VIEW3D_PT_macro(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'TOOLS'
@@ -351,8 +542,16 @@ class VIEW3D_PT_macro(bpy.types.Panel):
         pass
     
     def draw_header(self, context):
+        layout = self.layout
+        
         icon = ('CANCEL' if is_macro_recording else 'REC')
-        self.layout.operator("wm.record_macro", text="", icon=icon)
+        layout.operator("wm.record_macro", text="", icon=icon)
+        
+        sublayout = layout.row(True)
+        sublayout.operator("object.store_procedural_generator",
+                             text="", icon='FILE_TICK')
+        sublayout.operator("object.regenerate_procedural_object",
+                             text="", icon='FILE_REFRESH')
 
 def menu_func_draw(self, context):
     text = ("Recording... (Stop)" if is_macro_recording else "Record Macro")
@@ -364,9 +563,15 @@ def register():
     bpy.utils.register_class(StringItem)
     bpy.utils.register_class(SceneMacros)
     bpy.utils.register_class(MacroRecorder)
+    bpy.utils.register_class(StoreProceduralGenerator)
+    bpy.utils.register_class(CurrentGeneratorProperties)
+    bpy.utils.register_class(RegenerateProceduralObject)
     bpy.utils.register_class(VIEW3D_PT_macro)
     
     bpy.types.Scene.macros = bpy.props.PointerProperty(type=SceneMacros)
+    bpy.types.Object.procedural_generator = bpy.props.StringProperty()
+    setattr(bpy.types.WindowManager, procgen_attrname,
+            bpy.props.PointerProperty(type=CurrentGeneratorProperties))
     
     bpy.types.TEXT_MT_text.append(menu_func_draw)
     
@@ -377,9 +582,14 @@ def unregister():
     
     bpy.types.TEXT_MT_text.remove(menu_func_draw)
     
+    delattr(bpy.types.WindowManager, procgen_attrname)
+    del bpy.types.Object.procedural_generator
     del bpy.types.Scene.macros
     
     bpy.utils.unregister_class(VIEW3D_PT_macro)
+    bpy.utils.unregister_class(RegenerateProceduralObject)
+    bpy.utils.unregister_class(CurrentGeneratorProperties)
+    bpy.utils.unregister_class(StoreProceduralGenerator)
     bpy.utils.unregister_class(MacroRecorder)
     bpy.utils.unregister_class(SceneMacros)
     bpy.utils.unregister_class(StringItem)
